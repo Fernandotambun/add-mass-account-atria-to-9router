@@ -7,6 +7,7 @@
   "license": "ISC",
   "description": "Create Atria API keys from new accounts and push them straight into 9Router.",
   "dependencies": {
+    "chalk": "^4.1.2",
     "puppeteer": "^24.43.1"
   }
 }

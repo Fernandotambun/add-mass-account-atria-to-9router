@@ -11,6 +11,7 @@ const {
 } = require("./lib/atria");
 const { createClient } = require("./lib/nineRouter");
 const { sleep } = require("./lib/browser");
+const logger = require("./lib/logger");
 
 const args = parseArgs();
 
@@ -36,17 +37,19 @@ const fileName = (file) => path.basename(file);
 
 async function pushPending() {
   const pairs = files.readKeyPairs(config.files.pendingKeys);
-  console.log(`Pending keys in ${fileName(config.files.pendingKeys)}: ${pairs.length}`);
+  logger.info(`Pending keys in ${fileName(config.files.pendingKeys)}: ${pairs.length}`);
   if (pairs.length === 0) {
-    console.log("Nothing to do.");
+    logger.info("Nothing to do.");
     return;
   }
 
   const client = createClient({ baseUrl: BASE_URL });
   let pushed = 0;
   let failed = 0;
+  const runStart = Date.now();
 
   for (const pair of pairs) {
+    const elapsed = logger.startTimer();
     try {
       await client.pushKeyWithRetry(
         PROVIDER_NODE_ID,
@@ -54,25 +57,23 @@ async function pushPending() {
         {
           retries: RETRIES,
           onRetry: (attempt, err, wait) =>
-            console.log(
-              `  [retry] ${pair.email} attempt ${attempt} failed (${err.message}); waiting ${wait}ms`,
+            logger.retry(
+              `${pair.email} attempt ${attempt} failed (${err.message}); waiting ${wait}ms`,
             ),
         },
       );
       files.appendUniqueLine(config.files.sukses, pair.raw);
       files.removeLine(config.files.pendingKeys, pair.raw);
       pushed++;
-      console.log(`[OK]   ${pair.email} pushed to 9Router`);
+      logger.ok(`${pair.email} pushed to 9Router`, elapsed());
     } catch (e) {
       failed++;
-      console.error(`[FAIL] ${pair.email}: ${e.message}`);
+      logger.fail(`${pair.email}: ${e.message}`, elapsed());
     }
     if (DELAY_MS > 0) await sleep(DELAY_MS);
   }
 
-  console.log("\n=== Summary ===");
-  console.log(`Pushed : ${pushed}`);
-  console.log(`Failed : ${failed}`);
+  logger.summary({ pushed, failed, elapsed: logger.formatElapsed(Date.now() - runStart) });
 }
 
 /* ------------------------------------------------------------------ */
@@ -81,9 +82,9 @@ async function pushPending() {
 
 async function runPipeline() {
   const accounts = files.readAccounts(config.files.akun);
-  console.log(`Accounts in ${fileName(config.files.akun)}: ${accounts.length}`);
+  logger.info(`Accounts in ${fileName(config.files.akun)}: ${accounts.length}`);
   if (accounts.length === 0) {
-    console.log("Nothing to do.");
+    logger.info("Nothing to do.");
     return;
   }
 
@@ -105,25 +106,25 @@ async function runPipeline() {
       !existing.names.has(a.email.toLowerCase()),
   );
 
-  console.log(`Already pushed to 9Router : ${success.size}`);
-  console.log(`Existing keys on node     : ${existing.names.size}`);
-  console.log(`Keys awaiting push        : ${awaitingPush.size}`);
-  console.log(`Accounts to process       : ${pending.length}\n`);
+  logger.info(`Already pushed to 9Router : ${success.size}`);
+  logger.info(`Existing keys on node     : ${existing.names.size}`);
+  logger.info(`Keys awaiting push        : ${awaitingPush.size}`);
+  logger.info(`Accounts to process       : ${pending.length}`);
 
   if (pending.length === 0) {
-    console.log("No new accounts to process.");
+    logger.info("No new accounts to process.");
     return;
   }
 
   let pushed = 0;
   let failed = 0;
   let pendingSaved = 0;
+  const runStart = Date.now();
 
   for (let i = 0; i < pending.length; i++) {
     const account = pending[i];
-    console.log(`\n==================================================`);
-    console.log(`=== Account ${i + 1}/${pending.length}: ${account.email} ===`);
-    console.log(`==================================================`);
+    logger.section(i + 1, pending.length, account.email);
+    const elapsed = logger.startTimer();
 
     // 1. Create the Atria key (browser is closed by createAtriaKey).
     let apiKey;
@@ -138,7 +139,7 @@ async function runPipeline() {
         config.files.gagal,
         `${account.raw} | Reason: atria: ${e.message}`,
       );
-      console.error(`[FAIL] ${account.email}: ${e.message}`);
+      logger.fail(`${account.email}: ${e.message}`, elapsed());
       if (i < pending.length - 1 && DELAY_MS > 0) await sleep(DELAY_MS);
       continue;
     }
@@ -149,14 +150,12 @@ async function runPipeline() {
         config.files.gagal,
         `${account.raw} | Reason: created key has an unrecognized format`,
       );
-      console.error(
-        `[FAIL] ${account.email}: created key has an unrecognized format`,
-      );
+      logger.fail(`${account.email}: created key has an unrecognized format`, elapsed());
       if (i < pending.length - 1 && DELAY_MS > 0) await sleep(DELAY_MS);
       continue;
     }
 
-    console.log("  Pushing key to 9Router...");
+    logger.step("Pushing key to 9Router...");
 
     // 2. Push to 9Router, then discard the key.
     try {
@@ -166,8 +165,8 @@ async function runPipeline() {
         {
           retries: RETRIES,
           onRetry: (attempt, err, wait) =>
-            console.log(
-              `  [retry] push attempt ${attempt} failed (${err.message}); waiting ${wait}ms`,
+            logger.retry(
+              `push attempt ${attempt} failed (${err.message}); waiting ${wait}ms`,
             ),
         },
       );
@@ -177,9 +176,10 @@ async function runPipeline() {
       if (!KEEP_AKUN) files.removeLine(config.files.akun, account.raw);
 
       pushed++;
-      console.log(
-        `[OK]   ${account.email} pushed to 9Router` +
+      logger.ok(
+        `${account.email} pushed to 9Router` +
         (KEEP_AKUN ? "" : " and removed from akun.txt"),
+        elapsed(),
       );
     } catch (e) {
       // The Atria key exists but could not be delivered. Keep the key for a
@@ -196,54 +196,49 @@ async function runPipeline() {
         `${account.raw} | Reason: 9router push failed: ${e.message}`,
       );
       if (!KEEP_AKUN) files.removeLine(config.files.akun, account.raw);
-      console.error(
-        `[FAIL] ${account.email}: push failed (${e.message}); ` +
+      logger.fail(
+        `${account.email}: push failed (${e.message}); ` +
         `key saved to ${fileName(config.files.pendingKeys)}` +
         (KEEP_AKUN ? "" : " and removed from akun.txt"),
+        elapsed(),
       );
     }
 
     if (i < pending.length - 1 && DELAY_MS > 0) await sleep(DELAY_MS);
   }
 
-  console.log("\n=== Summary ===");
-  console.log(`Pushed        : ${pushed}`);
-  console.log(`Failed        : ${failed}`);
-  console.log(`Saved pending : ${pendingSaved}`);
-  if (pushed > 0) {
-    console.log(`\nSuccess log: ${fileName(config.files.sukses)}`);
-  }
-  if (failed > 0) {
-    console.log(`Failure log: ${fileName(config.files.gagal)}`);
-  }
-  if (pendingSaved > 0) {
-    console.log(
-      `Retry the undelivered keys with: node atria2router.js --push-pending`,
-    );
-  }
+  logger.summary({
+    pushed,
+    failed,
+    pendingSaved,
+    elapsed: logger.formatElapsed(Date.now() - runStart),
+    successLog: pushed > 0 ? fileName(config.files.sukses) : "",
+    failureLog: failed > 0 ? fileName(config.files.gagal) : "",
+    showRetryHint: pendingSaved > 0,
+  });
 }
 
 async function main() {
-  console.log("=== Atria -> 9Router Pipeline ===");
-  console.log(`Base URL : ${BASE_URL}`);
-  console.log(`Node     : ${PROVIDER_NODE_ID}`);
-  console.log(`Model    : ${MODEL}`);
-  if (PUSH_PENDING) console.log("Mode     : PUSH PENDING");
-  console.log("");
+  logger.banner("Atria -> 9Router Pipeline", {
+    "Base URL": BASE_URL,
+    "Node    ": PROVIDER_NODE_ID,
+    "Model   ": MODEL,
+    ...(PUSH_PENDING ? { "Mode    ": "PUSH PENDING" } : {}),
+  });
 
   if (PUSH_PENDING) return pushPending();
   return runPipeline();
 }
 
 process.on("SIGINT", () => {
-  console.log("\nInterrupted. Closing browser...");
+  logger.interrupted();
   closeActiveBrowser();
   process.exit(130);
 });
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(`\n[FATAL] ${error.message}`);
+    logger.fatal(error.message);
     process.exitCode = 1;
   });
 }
