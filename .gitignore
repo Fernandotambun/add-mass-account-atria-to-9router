@@ -1,0 +1,7 @@
+node_modules/
+
+# Credentials and run state
+akun.txt
+pending_keys.txt
+sukses.txt
+gagal.txt

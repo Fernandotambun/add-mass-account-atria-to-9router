@@ -1,0 +1,12 @@
+{
+  "name": "autologin",
+  "version": "1.0.0",
+  "main": "atria2router.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Create Atria API keys from new accounts and push them straight into 9Router.",
+  "dependencies": {
+    "puppeteer": "^24.43.1"
+  }
+}
